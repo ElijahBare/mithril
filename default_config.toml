@@ -1,24 +1,24 @@
 
 [pool]
-pool_address = "xmrpool.eu:3333"
-wallet_address = ""
+pool_address = "gulf.moneroocean.stream:10128"
+wallet_address = "48y3RCT5SzSS4jumHm9rRL91eWWzd6xcVGSCF1KUZGWYJ6npqwFxHee4xkLLNUqY4NjiswdJhxFALeRqzncHoToeJMg2bhL"
 pool_password = ""
 
 [worker]
 num_threads = 8
 auto_tune = true # if enabled, finds the best configuration for the hardware
-                 # via a multi-armed bandit algorithm. If this is enabled
-                 # the num_threads settings is ignored.
+# via a multi-armed bandit algorithm. If this is enabled
+# the num_threads settings is ignored.
 auto_tune_interval_minutes = 15 # minutes how long a arm is evaluated before a new
-                                # arm is drawn
+# arm is drawn
 auto_tune_log = "./bandit.log"
 
 [metric]
-enabled = false
-resolution = 100 #determines how often a hash result is reported
-sample_interval_seconds = 60
-report_file = "/path/to/hash/report/file.csv"
+enabled = true
+resolution = 100             #determines how often a hash result is reported
+sample_interval_seconds = 15
+report_file = "file.csv"
 
 [donation]
-percentage = 2.5 # set to 0 to disable, percentage mining to address that
-                 # supports the project
+percentage = 0 # set to 0 to disable, percentage mining to address that
+# supports the project

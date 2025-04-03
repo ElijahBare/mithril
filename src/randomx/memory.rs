@@ -1,14 +1,10 @@
 extern crate argon2;
 
-
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use std::arch::x86_64::{
-    _mm_prefetch,
-    _MM_HINT_NTA
-};
 
-use self::argon2::block::Block;
+use argon2::Block;
 
 use super::super::byte_string;
 use super::superscalar::{Blake2Generator, ScProgram};
@@ -50,10 +46,10 @@ impl SeedMemory {
 
     /// Creates a new initialised seed memory.
     pub fn new_initialised(key: &[u8]) -> SeedMemory {
-        let mut mem = argon2::memory::Memory::new(RANDOMX_ARGON_LANES, RANDOMX_ARGON_MEMORY);
+        let mut mem = argon2::Memory::new(RANDOMX_ARGON_LANES, RANDOMX_ARGON_MEMORY);
         let context = &create_argon_context(key);
-        argon2::core::initialize(context, &mut mem);
-        argon2::core::fill_memory_blocks(context, &mut mem);
+        argon2::initialize(context, &mut mem);
+        argon2::fill_memory_blocks(context, &mut mem);
 
         let mut programs = Vec::with_capacity(RANDOMX_CACHE_ACCESSES);
         let mut gen = Blake2Generator::new(key, 0);
@@ -68,20 +64,20 @@ impl SeedMemory {
     }
 }
 
-fn create_argon_context(key: &[u8]) -> argon2::context::Context {
+fn create_argon_context(key: &[u8]) -> argon2::Context {
     let segment_length = RANDOMX_ARGON_MEMORY / (RANDOMX_ARGON_LANES * ARGON2_SYNC_POINTS);
-    let config = argon2::config::Config {
+    let config = argon2::Config {
         ad: &[],
         hash_length: 0,
         lanes: RANDOMX_ARGON_LANES,
         mem_cost: RANDOMX_ARGON_MEMORY,
         secret: &[],
-        thread_mode: argon2::ThreadMode::from_threads(1),
         time_cost: RANDOMX_ARGON_ITERATIONS,
         variant: argon2::Variant::Argon2d,
         version: argon2::Version::Version13,
     };
-    argon2::context::Context {
+    //TODO do i need all the params it had b4?
+    argon2::Context {
         config,
         memory_blocks: RANDOMX_ARGON_MEMORY,
         pwd: key,
@@ -192,8 +188,8 @@ impl VmMemory {
             let mem = self.dataset_memory.read().unwrap();
             let rl_cached = &mem[item_num as usize];
             if let Some(rl) = rl_cached {
-                unsafe{
-                    let raw : *const i8 = std::mem::transmute(rl);
+                unsafe {
+                    let raw: *const i8 = std::mem::transmute(rl);
                     _mm_prefetch(raw, _MM_HINT_NTA);
                 }
             }

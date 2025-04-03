@@ -8,7 +8,7 @@ use self::config::{Config, ConfigError, File};
 use std;
 use std::path::Path;
 
-pub const CONFIG_FILE_NAME: &str = "config.toml";
+pub const CONFIG_FILE_NAME: &str = "default_config.toml";
 
 /// contains all configurations for mithril
 #[derive(Clone)]

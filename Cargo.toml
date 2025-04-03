@@ -1,10 +1,12 @@
 [package]
 name = "mithril"
-version = "0.20.0"
+version = "0.1.0"
 authors = ["Michael Bohn <spaceodyssey@gmx.de>"]
+
 
 [lib]
 name = "mithril"
+edition = "2015"
 
 [dependencies]
 blake2b_simd = "1.0.0"
@@ -19,7 +21,8 @@ num_cpus = "1.13.1"
 bandit = "0.12.4"
 dirs = "4.0.0"
 crossbeam-channel = "0.5.4"
-rust-argon2 = { git = "https://github.com/Ragnaroek/rust-argon2" }
+rust-argon2 = { git = "https://github.com/ElijahBare/rust-argon2" }
+
 
 [dev-dependencies]
 difference = "2.0.0"

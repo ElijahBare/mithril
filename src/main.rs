@@ -20,6 +20,7 @@ use std::io::Error;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use bandit::MultiArmedBandit;
 
@@ -49,7 +50,6 @@ fn main() {
     } else {
         None
     };
-
     let timer_rcvr = timer::setup(&config.worker_conf, &config.donation_conf);
     let mut donation_hashing = false;
     let mut vm_memory_allocator = VmMemoryAllocator::initial();
@@ -64,13 +64,16 @@ fn main() {
         } else {
             config.pool_conf.clone()
         };
-
+        info!("logging into stratum server: {}", conf.pool_address);
         let login_result = StratumClient::login(conf, client_err_sndr, stratum_sndr);
         if login_result.is_err() {
             error!("stratum login failed {:?}", login_result.err());
             await_timeout();
             continue;
         }
+
+        info!("Completed stratum login!");
+
         let client = login_result.expect("stratum client");
         let share_sndr = client.new_cmd_channel();
         let (arm, num_threads) = if bandit.is_some() {
@@ -93,8 +96,13 @@ fn main() {
             vm_memory_allocator,
         );
 
-        let term_result =
-            start_main_event_loop(&mut pool, &client_err_rcvr, &stratum_rcvr, &timer_rcvr);
+        let term_result = start_main_event_loop(
+            &mut pool,
+            &client_err_rcvr,
+            &stratum_rcvr,
+            &timer_rcvr,
+            &metric,
+        );
 
         vm_memory_allocator = pool.vm_memory_allocator.clone();
         pool.stop();
@@ -155,13 +163,34 @@ fn start_main_event_loop(
     client_err_rcvr: &Receiver<Error>,
     stratum_rcvr: &Receiver<StratumAction>,
     timer_rcvr: &Receiver<timer::TickAction>,
+    metric: &metric::Metric,
 ) -> io::Result<MainLoopExit> {
+    let mut last_time = Instant::now();
+    let mut last_hash_count = 0;
+
     loop {
         select! {
             recv(stratum_rcvr) -> stratum_msg => {
                 if stratum_msg.is_err() {
                     return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "received error"));
                 }
+
+                let now = Instant::now();
+                if now.duration_since(last_time) >= Duration::from_secs(1) {
+                    let current_hash_count = metric.hash_count();
+                    let hash_diff = current_hash_count - last_hash_count;
+                    let elapsed_secs = now.duration_since(last_time).as_secs_f64();
+                    // Convert to kilo-hashes per second
+                    let khs = (hash_diff as f64 / elapsed_secs) / 1000.0;
+
+                    info!("Current hashrate: {} hashes in last interval, {:.2} kH/s", hash_diff, khs);
+
+                    last_time = now;
+                    last_hash_count = current_hash_count;
+                }
+
+
+
                 match stratum_msg.unwrap() {
                     StratumAction::Job{miner_id, seed_hash, blob, job_id, target} => {
                         pool.job_change(&miner_id, &seed_hash, &blob, &job_id, &target);
