@@ -28,3 +28,7 @@ rust-argon2 = { git = "https://github.com/ElijahBare/rust-argon2" }
 [dev-dependencies]
 difference = "2.0.0"
 lazy_static = "1.5.0"
+flamegraph = "0.6.7"
+
+[profile.release]
+debug = true

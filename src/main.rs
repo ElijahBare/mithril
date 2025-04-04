@@ -21,6 +21,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use bandit::MultiArmedBandit;
 
@@ -167,29 +168,37 @@ fn start_main_event_loop(
 ) -> io::Result<MainLoopExit> {
     let mut last_time = Instant::now();
     let mut last_hash_count = 0;
+    let mut last_hashrate_display = SystemTime::now();
+    let hashrate_display_interval = Duration::from_millis(1000);
 
     loop {
+        // Check if it's time to display hashrate
+        let now = SystemTime::now();
+        if now.duration_since(last_hashrate_display).unwrap_or(Duration::from_secs(0)) >= hashrate_display_interval {
+            let current_time = Instant::now();
+            let current_hash_count = metric.hash_count();
+            let hash_diff = current_hash_count - last_hash_count;
+            let elapsed_secs = current_time.duration_since(last_time).as_secs_f64();
+            
+            if elapsed_secs > 0.0 {
+                // Convert to kilo-hashes per second
+                let khs = (hash_diff as f64 / elapsed_secs) / 1000.0;
+                
+                println!("Hashrate: {:.2} kH/s ({} hashes in {:.1}s)", 
+                    khs, hash_diff, elapsed_secs);
+            }
+            
+            last_time = current_time;
+            last_hash_count = current_hash_count;
+            last_hashrate_display = now;
+        }
+        
+        // Check if there's any message (with very short timeout)
         select! {
             recv(stratum_rcvr) -> stratum_msg => {
                 if stratum_msg.is_err() {
                     return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "received error"));
                 }
-
-                let now = Instant::now();
-                if now.duration_since(last_time) >= Duration::from_secs(1) {
-                    let current_hash_count = metric.hash_count();
-                    let hash_diff = current_hash_count - last_hash_count;
-                    let elapsed_secs = now.duration_since(last_time).as_secs_f64();
-                    // Convert to kilo-hashes per second
-                    let khs = (hash_diff as f64 / elapsed_secs) / 1000.0;
-
-                    info!("Current hashrate: {} hashes in last interval, {:.2} kH/s", hash_diff, khs);
-
-                    last_time = now;
-                    last_hash_count = current_hash_count;
-                }
-
-
 
                 match stratum_msg.unwrap() {
                     StratumAction::Job{miner_id, seed_hash, blob, job_id, target} => {
@@ -224,6 +233,9 @@ fn start_main_event_loop(
             },
             recv(client_err_rcvr) -> client_err_msg => {
                 return Err(io::Error::new(io::ErrorKind::Other, format!("error received {:?}", client_err_msg)));
+            },
+            default(Duration::from_millis(100)) => {
+                // Timeout after 100ms to allow for hashrate display
             }
         }
     }

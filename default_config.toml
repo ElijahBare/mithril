@@ -15,7 +15,7 @@ auto_tune_log = "./bandit.log"
 
 [metric]
 enabled = true
-resolution = 100             #determines how often a hash result is reported
+resolution = 1000            #determines how often a hash result is reported
 sample_interval_seconds = 15
 report_file = "file.csv"
 

@@ -183,58 +183,76 @@ fn work_job<'a>(
     metric_tx: &Sender<u64>,
 ) -> WorkerExit {
     let num_target = job_target_value(&job.target);
-    let mut nonce = job.nonce.fetch_add(1, Ordering::SeqCst);
+    let mut nonce = job.nonce.fetch_add(1, Ordering::Relaxed); // Relaxed ordering is sufficient here
 
     let mut hash_count: u64 = 0;
     let mut vm = new_vm(job.memory.clone());
+    
+    // Pre-calculate the static part of the blob
+    let (blob_prefix, blob_suffix) = job.blob.split_at(78);
+    let (_, blob_suffix) = blob_suffix.split_at(8);
 
-    while nonce <= 65535 {
-        let nonce_hex = nonce_hex(nonce);
-        let hash_in = with_nonce(&job.blob, &nonce_hex);
-        let bytes_in = byte_string::string_to_u8_array(&hash_in);
-
-        let hash_result = vm.calculate_hash(&bytes_in).to_hex();
-        let hash_val = hash_target_value(&hash_result);
-
-        if hash_val < num_target {
-            let share = stratum_data::Share {
-                miner_id: job.miner_id.clone(),
-                job_id: job.job_id.clone(),
-                nonce: nonce_hex,
-                hash: hash_result.to_string(),
-            };
-
-            let submit_result = stratum::submit_share(share_tx, share);
-            if submit_result.is_err() {
-                error!("submitting share failed: {:?}", submit_result);
+    // Use a larger batch size to improve performance
+    const BATCH_SIZE: u32 = 32;
+    
+    'outer: while nonce <= 65535 {
+        // Process a batch of nonces before checking for commands
+        for _ in 0..BATCH_SIZE {
+            if nonce > 65535 {
+                break 'outer;
             }
-        }
+            
+            let nonce_hex = nonce_hex(nonce);
+            // Avoid string concatenation by building the hash input more efficiently
+            let hash_in = format!("{}{}{}", blob_prefix, nonce_hex, blob_suffix);
+            let bytes_in = byte_string::string_to_u8_array(&hash_in);
 
-        hash_count += 1;
-        if hash_count % metric_resolution == 0 {
-            let send_result = metric_tx.send(hash_count);
-            if send_result.is_err() {
-                error!("metric submit failed {:?}", send_result);
+            let hash_result = vm.calculate_hash(&bytes_in).to_hex();
+            let hash_val = hash_target_value(&hash_result);
+
+            if hash_val < num_target {
+                let share = stratum_data::Share {
+                    miner_id: job.miner_id.clone(),
+                    job_id: job.job_id.clone(),
+                    nonce: nonce_hex,
+                    hash: hash_result.to_string(),
+                };
+
+                let submit_result = stratum::submit_share(share_tx, share);
+                if submit_result.is_err() {
+                    error!("submitting share failed: {:?}", submit_result);
+                }
             }
-            hash_count = 0;
-        }
 
+            hash_count += 1;
+            if hash_count % metric_resolution == 0 {
+                let send_result = metric_tx.send(hash_count);
+                if send_result.is_err() {
+                    error!("metric submit failed {:?}", send_result);
+                }
+                hash_count = 0;
+            }
+            
+            nonce = job.nonce.fetch_add(1, Ordering::Relaxed);
+        }
+        
+        // Check for commands after processing a batch
         let cmd = check_command_available(rcv);
         if let Some(cmd_value) = cmd {
             match cmd_value {
                 WorkerCmd::NewJob { job_data } => {
-                    let send_result = metric_tx.send(hash_count);
-                    if send_result.is_err() {
-                        //flush hash_count
-                        error!("metric submit failed {:?}", send_result);
+                    // Send remaining hash count before switching jobs
+                    if hash_count > 0 {
+                        let send_result = metric_tx.send(hash_count);
+                        if send_result.is_err() {
+                            error!("metric submit failed {:?}", send_result);
+                        }
                     }
                     return WorkerExit::NewJob { job_data };
                 }
                 WorkerCmd::Stop => return WorkerExit::Stopped,
             }
         }
-
-        nonce = job.nonce.fetch_add(1, Ordering::SeqCst);
     }
     WorkerExit::NonceSpaceExhausted
 }
@@ -244,9 +262,11 @@ pub fn nonce_hex(nonce: u32) -> String {
 }
 
 pub fn with_nonce(blob: &str, nonce: &str) -> String {
+    // Replaced with a more efficient implementation directly in the work_job function
+    // Kept for backward compatibility with existing code
     let (a, _) = blob.split_at(78);
     let (_, b) = blob.split_at(86);
-    return format!("{}{}{}", a, nonce, b);
+    format!("{}{}{}", a, nonce, b)
 }
 
 fn check_command_available(rcv: &Receiver<WorkerCmd>) -> Option<WorkerCmd> {

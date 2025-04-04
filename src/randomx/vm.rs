@@ -170,25 +170,46 @@ impl Vm {
     }
 
     pub fn calculate_hash(&mut self, input: &[u8]) -> Hash {
+        // Initial Blake2b hash of input data
         let hash = blake2b(input);
+        
+        // Convert hash to m128i array format for processing
         let seed = hash_to_m128i_array(&hash);
 
+        // Initialize the scratchpad with the seed
         let mut tmp_hash = self.init_scratchpad(&seed);
+        
+        // Reset the CPU rounding mode for consistent floating-point operations
         self.reset_rounding_mode();
 
-        for _ in 0..(RANDOMX_PROGRAM_COUNT - 1) {
+        // Run multiple iterations of the RandomX program
+        // Each iteration uses the hash from the previous iteration as input
+        const ITERATIONS: usize = RANDOMX_PROGRAM_COUNT - 1;
+        for _ in 0..ITERATIONS {
+            // Run the RandomX program with the current hash
             self.run(&tmp_hash);
-            let blake_result = blake2b(&self.reg.to_bytes());
+            
+            // Generate a new hash from the VM register state
+            let reg_bytes = self.reg.to_bytes();
+            let blake_result = blake2b(&reg_bytes);
+            
+            // Convert the new hash to m128i array format for the next iteration
             tmp_hash = hash_to_m128i_array(&blake_result);
         }
 
+        // Run the final iteration of the RandomX program
         self.run(&tmp_hash);
+        
+        // Generate the final hash using AES operations on the scratchpad
         let final_hash = hash_aes_1rx4(&self.scratchpad);
+        
+        // Store the final hash in the VM's register state
         self.reg.a[0] = final_hash[0].as_m128d();
         self.reg.a[1] = final_hash[1].as_m128d();
         self.reg.a[2] = final_hash[2].as_m128d();
         self.reg.a[3] = final_hash[3].as_m128d();
 
+        // Create a Blake2b hash of the VM's final register state
         let mut params = Params::new();
         params.hash_length(RANDOMX_HASH_SIZE);
         params.hash(&self.reg.to_bytes())
@@ -196,37 +217,58 @@ impl Vm {
 
     /// Runs one round
     pub fn run(&mut self, seed: &[m128i; 4]) {
+        // Generate program from seed
         let prog = Program::from_bytes(gen_program_aes_4rx4(seed, 136));
 
+        // Initialize VM state with the program
         self.init_vm(&prog);
 
+        // Initialize scratchpad addresses
         let mut sp_addr_0: u32 = self.mem_reg.mx as u32;
         let mut sp_addr_1: u32 = self.mem_reg.ma as u32;
 
+        // Main loop: iterate through program specified number of times
         for _ in 0..RANDOMX_PROGRAM_ITERATIONS {
+            // Mix scratchpad addresses based on register values
             let sp_mix = self.reg.r[self.config.read_reg[0]] ^ self.reg.r[self.config.read_reg[1]];
 
+            // Update first scratchpad address
             sp_addr_0 ^= sp_mix as u32;
             sp_addr_0 &= SCRATCHPAD_L3_MASK_U32;
             sp_addr_0 /= 8;
+            
+            // Update second scratchpad address
             sp_addr_1 ^= (sp_mix >> 32) as u32;
             sp_addr_1 &= SCRATCHPAD_L3_MASK_U32;
             sp_addr_1 /= 8;
 
-            for i in 0..MAX_REG {
-                self.reg.r[i] ^= self.scratchpad[sp_addr_0 as usize + i];
-            }
+            // Load values from scratchpad into registers
+            // XOR with integer registers (unrolled loop)
+            let sp_addr_0_usize = sp_addr_0 as usize;
+            self.reg.r[0] ^= self.scratchpad[sp_addr_0_usize];
+            self.reg.r[1] ^= self.scratchpad[sp_addr_0_usize + 1];
+            self.reg.r[2] ^= self.scratchpad[sp_addr_0_usize + 2];
+            self.reg.r[3] ^= self.scratchpad[sp_addr_0_usize + 3];
+            self.reg.r[4] ^= self.scratchpad[sp_addr_0_usize + 4];
+            self.reg.r[5] ^= self.scratchpad[sp_addr_0_usize + 5];
+            self.reg.r[6] ^= self.scratchpad[sp_addr_0_usize + 6];
+            self.reg.r[7] ^= self.scratchpad[sp_addr_0_usize + 7];
+            
+            // Load values into floating-point registers
+            let sp_addr_1_usize = sp_addr_1 as usize;
             for i in 0..MAX_FLOAT_REG {
                 self.reg.f[i] =
-                    m128i::from_u64(0, self.scratchpad[sp_addr_1 as usize + i]).lower_to_m128d();
+                    m128i::from_u64(0, self.scratchpad[sp_addr_1_usize + i]).lower_to_m128d();
             }
+            
+            // Load and mask values into exponent registers
             for i in 0..MAX_FLOAT_REG {
-                self.reg.e[i] = self.mask_register_exponent_mantissa(
-                    m128i::from_u64(0, self.scratchpad[sp_addr_1 as usize + i + MAX_FLOAT_REG])
-                        .lower_to_m128d(),
-                );
+                let value = self.scratchpad[sp_addr_1_usize + i + MAX_FLOAT_REG];
+                let m128d_value = m128i::from_u64(0, value).lower_to_m128d();
+                self.reg.e[i] = self.mask_register_exponent_mantissa(m128d_value);
             }
 
+            // Execute the program instructions
             self.pc = 0;
             while self.pc < RANDOMX_PROGRAM_SIZE {
                 let instr = &prog.program[self.pc as usize];
@@ -234,30 +276,40 @@ impl Vm {
                 self.pc += 1;
             }
 
-            self.mem_reg.mx ^= (self.reg.r[self.config.read_reg[2]]
-                ^ self.reg.r[self.config.read_reg[3]]) as usize;
+            // Update memory registers based on register values
+            let read_mix = self.reg.r[self.config.read_reg[2]] ^ self.reg.r[self.config.read_reg[3]];
+            self.mem_reg.mx ^= read_mix as usize;
             self.mem_reg.mx &= CACHE_LINE_ALIGN_MASK as usize;
+            
+            // Prefetch dataset for next iteration
             self.mem.dataset_prefetch(self.mem_reg.mx as u64);
-            self.mem.dataset_read(
-                self.dataset_offset + self.mem_reg.ma as u64,
-                &mut self.reg.r,
-            );
+            
+            // Read from dataset into registers
+            let read_offset = self.dataset_offset + self.mem_reg.ma as u64;
+            self.mem.dataset_read(read_offset, &mut self.reg.r);
 
+            // Swap memory registers for next iteration
             std::mem::swap(&mut self.mem_reg.mx, &mut self.mem_reg.ma);
 
+            // Store register values back to scratchpad
             for i in 0..MAX_REG {
-                self.scratchpad[sp_addr_1 as usize + i] = self.reg.r[i];
+                self.scratchpad[sp_addr_1_usize + i] = self.reg.r[i];
             }
+            
+            // XOR floating-point registers with exponent registers
             for i in 0..MAX_FLOAT_REG {
                 self.reg.f[i] = self.reg.f[i] ^ self.reg.e[i];
             }
 
+            // Store floating-point register values to scratchpad
             for i in 0..MAX_FLOAT_REG {
                 let (u1, u0) = self.reg.f[i].as_u64();
-                let ix = sp_addr_0 as usize + 2 * i;
+                let ix = sp_addr_0_usize + 2 * i;
                 self.scratchpad[ix] = u0;
                 self.scratchpad[ix + 1] = u1;
             }
+            
+            // Reset scratchpad addresses for next iteration
             sp_addr_0 = 0;
             sp_addr_1 = 0;
         }

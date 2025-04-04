@@ -183,16 +183,35 @@ impl VmMemory {
     }
 
     pub fn dataset_prefetch(&self, offset: u64) {
+        if !self.cache {
+            return; // Skip prefetching for non-cached memory
+        }
+
         let item_num = offset / CACHE_LINE_SIZE;
-        if self.cache {
+
+        // Quick read lock to check if the item is cached
+        let need_init = {
             let mem = self.dataset_memory.read().unwrap();
             let rl_cached = &mem[item_num as usize];
+
             if let Some(rl) = rl_cached {
+                // Item exists in cache, prefetch it
                 unsafe {
                     let raw: *const i8 = std::mem::transmute(rl);
                     _mm_prefetch(raw, _MM_HINT_NTA);
                 }
+                false
+            } else {
+                // Item doesn't exist in cache
+                true
             }
+        };
+
+        // prefetch the next few items as well (spatial locality)
+        if need_init && item_num + 1 < DATASET_ITEM_COUNT as u64 {
+            // Precompute the next item asynchronously if it's not in cache
+            // We don't actually need to do anything here as the next read will initialize it
+            // This is just a hint to the code that we might need it soon
         }
     }
 
@@ -200,29 +219,56 @@ impl VmMemory {
         let item_num = offset / CACHE_LINE_SIZE;
 
         if self.cache {
-            {
+            // Use a scope for the read lock to ensure it's dropped quickly
+            let rl_opt: std::option::Option<[u64; 8]> = {
                 let mem = self.dataset_memory.read().unwrap();
                 let rl_cached = &mem[item_num as usize];
                 if let Some(rl) = rl_cached {
-                    for i in 0..8 {
-                        reg[i] ^= rl[i];
-                    }
+                    // If cached, apply XOR directly and return
+                    reg[0] ^= rl[0];
+                    reg[1] ^= rl[1];
+                    reg[2] ^= rl[2];
+                    reg[3] ^= rl[3];
+                    reg[4] ^= rl[4];
+                    reg[5] ^= rl[5];
+                    reg[6] ^= rl[6];
+                    reg[7] ^= rl[7];
                     return;
                 }
-            }
-            {
+                None
+            };
+
+            // If we get here, we need to initialize the item
+            if rl_opt.is_none() {
                 let rl = init_dataset_item(&self.seed_memory, item_num);
+
+                // Apply XOR
+                reg[0] ^= rl[0];
+                reg[1] ^= rl[1];
+                reg[2] ^= rl[2];
+                reg[3] ^= rl[3];
+                reg[4] ^= rl[4];
+                reg[5] ^= rl[5];
+                reg[6] ^= rl[6];
+                reg[7] ^= rl[7];
+
+                // Cache the result after applying XOR
                 let mut mem_mut = self.dataset_memory.write().unwrap();
                 mem_mut[item_num as usize] = Some(rl);
-                for i in 0..8 {
-                    reg[i] ^= rl[i];
-                }
             }
         } else {
+            // Non-cached version
             let rl = init_dataset_item(&self.seed_memory, item_num);
-            for i in 0..8 {
-                reg[i] ^= rl[i];
-            }
+
+            // Unrolled loop for better performance
+            reg[0] ^= rl[0];
+            reg[1] ^= rl[1];
+            reg[2] ^= rl[2];
+            reg[3] ^= rl[3];
+            reg[4] ^= rl[4];
+            reg[5] ^= rl[5];
+            reg[6] ^= rl[6];
+            reg[7] ^= rl[7];
         }
     }
 }
