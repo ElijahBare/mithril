@@ -23,6 +23,7 @@ bandit = "0.12.4"
 dirs = "4.0.0"
 crossbeam-channel = "0.5.14"
 rust-argon2 = { git = "https://github.com/ElijahBare/rust-argon2" }
+hex = "0.4.3"
 
 
 [dev-dependencies]

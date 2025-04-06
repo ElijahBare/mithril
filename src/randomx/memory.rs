@@ -135,7 +135,7 @@ impl VmMemoryAllocator {
         }
     }
 
-    pub fn reallocate(&mut self, seed: String) {
+    pub fn reallocate(&mut self, seed: String) -> bool {
         if seed != self.vm_memory_seed {
             let mem_init_start = Instant::now();
             self.vm_memory = Arc::new(VmMemory::full(&byte_string::string_to_u8_array(&seed)));
@@ -145,7 +145,14 @@ impl VmMemoryAllocator {
                 mem_init_start.elapsed().as_millis(),
                 self.vm_memory_seed,
             );
+            return true; // Memory was reallocated
         }
+        false // No reallocation needed
+    }
+    
+    // Add get_memory method to retrieve the current memory Arc
+    pub fn get_memory(&self) -> Arc<VmMemory> {
+        self.vm_memory.clone()
     }
 }
 
